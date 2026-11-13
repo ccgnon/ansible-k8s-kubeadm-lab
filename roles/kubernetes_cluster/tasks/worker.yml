@@ -1,0 +1,19 @@
+---
+- name: Check whether this worker already joined
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kc_joined
+
+- name: Join worker to Kubernetes cluster
+  when: not kc_joined.stat.exists
+  block:
+    - name: Ensure join command is available from the control-plane
+      ansible.builtin.assert:
+        that: hostvars[k8s_master_host].k8s_join_command is defined
+        fail_msg: "Pas de commande de join : le control-plane {{ k8s_master_host }} doit être dans le même run."
+        quiet: true
+
+    - name: Run kubeadm join
+      ansible.builtin.command:
+        cmd: "{{ hostvars[k8s_master_host].k8s_join_command }} --cri-socket={{ k8s_cri_socket }}"
+        creates: /etc/kubernetes/kubelet.conf

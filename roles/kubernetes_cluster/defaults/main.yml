@@ -1,0 +1,84 @@
+---
+# --- Versions ----------------------------------------------------------------
+# NB : Kubernetes 1.28 n'est plus supporté (EOL). Pour monter de version, change
+# kubernetes_version (le dépôt pkgs.k8s.io et cri-tools suivent automatiquement)
+# et pause_image (cf. "kubeadm config images list").
+kubernetes_version: "1.28.2"
+kubernetes_minor: "{{ kubernetes_version.split('.')[0:2] | join('.') }}"
+containerd_version: "1.7.22"               # matche n'importe quelle release RPM
+calico_version: "3.28.2"
+pause_image: "registry.k8s.io/pause:3.9"
+
+# --- Topologie (groupes d'inventaire) ----------------------------------------
+k8s_master_group: masters
+k8s_worker_group: workers
+k8s_master_host: "{{ groups[k8s_master_group][0] }}"
+
+# IP utilisée par kubelet / l'API server. Sous Vagrant, eth0 est le NAT
+# (10.0.2.15 sur toutes les VM) : il faut forcer l'IP du réseau host-only.
+k8s_node_ip: "{{ ansible_host | default(ansible_default_ipv4.address) }}"
+
+# --- Réseau ------------------------------------------------------------------
+pod_network_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+# --- Système -----------------------------------------------------------------
+k8s_min_memory_mb: 1700
+k8s_selinux_state: permissive
+k8s_kernel_modules:
+  - overlay
+  - br_netfilter
+  - nf_conntrack      # requis par kube-proxy (sinon CrashLoopBackOff : nf_conntrack_max absent)
+k8s_sysctl:
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  net.ipv4.ip_forward: 1
+
+# --- Runtime -----------------------------------------------------------------
+k8s_manage_docker_repo: true               # containerd.io vient du dépôt Docker CE
+k8s_cri_socket: unix:///run/containerd/containerd.sock
+# Paquets dont l'intégrité est vérifiée (rpm -V) et réparée à chaque run
+k8s_verified_packages:
+  - containerd.io
+  - cri-tools
+  - kubeadm
+  - kubelet
+  - kubectl
+  - kubernetes-cni
+
+# --- Images -----------------------------------------------------------------
+k8s_image_pull_retries: 5
+k8s_image_pull_delay: 15
+k8s_calico_images: >-
+  {{ ['node', 'cni', 'pod2daemon-flexvol', 'typha', 'kube-controllers',
+      'csi', 'node-driver-registrar', 'apiserver']
+     | map('regex_replace', '^', 'docker.io/calico/')
+     | map('regex_replace', '$', ':v' ~ calico_version) | list }}
+
+# --- Réinitialisation ciblée -----------------------------------------------
+# Workers à réinitialiser puis faire rejoindre (ex. -e k8s_reset_nodes=redhat-vm2)
+k8s_reset_nodes: []
+
+# --- Accès -------------------------------------------------------------------
+k8s_admin_user: vagrant                    # reçoit ~/.kube/config sur le master
+k8s_admin_env:
+  KUBECONFIG: /etc/kubernetes/admin.conf
+k8s_ready_timeout: 600                     # secondes pour que les nœuds passent Ready
+
+# --- Firewall ----------------------------------------------------------------
+# false (défaut labo) : firewalld arrêté. true : firewalld + règles ci-dessous.
+k8s_firewalld_enabled: false
+k8s_fw_master_ports:
+  - 6443/tcp          # API server
+  - 2379-2380/tcp     # etcd
+  - 10250/tcp         # kubelet
+  - 10257/tcp         # controller-manager
+  - 10259/tcp         # scheduler
+k8s_fw_worker_ports:
+  - 10250/tcp         # kubelet
+  - 10256/tcp         # kube-proxy
+  - 30000-32767/tcp   # NodePort
+k8s_fw_cni_ports:
+  - 179/tcp           # Calico BGP
+  - 4789/udp          # Calico VXLAN
+  - 5473/tcp          # Calico Typha

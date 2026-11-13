@@ -1,0 +1,57 @@
+---
+# Validation de bout en bout : tous les nœuds doivent passer Ready,
+# ce qui prouve que kubelet, containerd ET Calico fonctionnent.
+# En cas d'échec, on affiche directement le diagnostic utile.
+- name: Verify cluster health
+  delegate_to: "{{ k8s_master_host }}"
+  run_once: true
+  environment: "{{ k8s_admin_env }}"
+  block:
+    - name: Wait for all nodes to be Ready
+      ansible.builtin.command: >-
+        kubectl wait node --all --for=condition=Ready --timeout={{ k8s_ready_timeout }}s
+      changed_when: false
+
+    - name: Get cluster nodes
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: kc_nodes_wide
+      changed_when: false
+
+    - name: Show cluster nodes
+      ansible.builtin.debug:
+        var: kc_nodes_wide.stdout_lines
+
+  rescue:
+    - name: Collect diagnostics (nodes, Calico, pods, events)
+      ansible.builtin.shell: |
+        set +e -o pipefail
+        echo "===== NODES";        kubectl get nodes -o wide
+        echo "===== NODE READY";   kubectl describe nodes | grep -E "^Name:|^ +Ready +"
+        echo "===== TIGERASTATUS"; kubectl get tigerastatus
+        echo "===== PODS";         kubectl get pods -A -o wide | grep -v ' Running .* 1/1\| Completed '
+        echo "===== KUBE-PROXY (restarts)"
+        for p in $(kubectl -n kube-system get pods -l k8s-app=kube-proxy -o name); do
+          echo "--- $p"; kubectl -n kube-system logs "$p" --previous --tail=5 2>/dev/null
+        done
+        echo "===== FAILING CALICO PODS (logs, init containers included)"
+        for p in $(kubectl -n calico-system get pods --no-headers | awk '{split($2,r,"/"); if (r[1]!=r[2]) print $1}'); do
+          for c in $(kubectl -n calico-system get pod "$p" -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}'); do
+            echo "--- $p / $c"
+            kubectl -n calico-system logs "$p" -c "$c" --previous --tail=15 2>/dev/null \
+              || kubectl -n calico-system logs "$p" -c "$c" --tail=15 2>&1
+          done
+        done
+        echo "===== OPERATOR LOG"; kubectl -n tigera-operator logs deploy/tigera-operator --tail=20
+        echo "===== EVENTS";       kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp | tail -25
+      args:
+        executable: /bin/bash
+      register: kc_diag
+      changed_when: false
+
+    - name: Show diagnostics
+      ansible.builtin.debug:
+        var: kc_diag.stdout_lines
+
+    - name: Fail with diagnostics
+      ansible.builtin.fail:
+        msg: "Des nœuds ne sont pas Ready : voir le diagnostic ci-dessus."

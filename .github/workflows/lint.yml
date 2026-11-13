@@ -1,0 +1,27 @@
+name: lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ansible-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install ansible-core ansible-lint yamllint
+
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Syntax check
+        run: ansible-playbook k8s_cluster.yml --syntax-check
+
+      - name: ansible-lint (production profile)
+        run: ansible-lint

@@ -1,0 +1,8 @@
+---
+# Versions compatibles ansible-core 2.16 (Ubuntu 24.04). Avec ansible-core >= 2.17
+# tu peux retirer les contraintes de version.
+collections:
+  - name: ansible.posix
+    version: ">=1.5.4,<2.0.0"
+  - name: community.general
+    version: ">=8.0.0,<11.0.0"

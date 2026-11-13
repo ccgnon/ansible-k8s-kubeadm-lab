@@ -1,0 +1,77 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+# --- Mode labo (défaut) : firewalld arrêté ----------------------------------
+- name: Stop and disable firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+  when:
+    - not (k8s_firewalld_enabled | bool)
+    - "'firewalld.service' in ansible_facts.services"
+
+# Un firewalld qui a planté au démarrage (timeout) laisse ses tables nftables
+# chargées : arrêter le service ne les retire pas. Elles rejettent alors le
+# trafic vers les services Kubernetes ("no route to host" vers 10.96.0.1).
+- name: List nftables tables
+  ansible.builtin.command: nft list tables
+  register: kc_nft_tables
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: not (k8s_firewalld_enabled | bool)
+
+- name: Remove leftover firewalld nftables tables
+  ansible.builtin.command: "nft delete table {{ item }}"
+  loop: >-
+    {{ kc_nft_tables.stdout_lines | default([])
+       | select('search', ' firewalld$')
+       | map('regex_replace', '^table ', '') | list }}
+  when: not (k8s_firewalld_enabled | bool)
+  changed_when: true
+
+# --- Mode durci : firewalld + règles Kubernetes/Calico ----------------------
+- name: Configure firewalld
+  when: k8s_firewalld_enabled | bool
+  block:
+    - name: Install firewalld
+      ansible.builtin.dnf:
+        name: firewalld
+        state: present
+
+    - name: Start and enable firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: true
+        masked: false
+
+    - name: Open firewall ports
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: >-
+        {{ (k8s_fw_master_ports if inventory_hostname in groups[k8s_master_group] else k8s_fw_worker_ports)
+           + k8s_fw_cni_ports }}
+
+    - name: Trust pod and service networks
+      ansible.posix.firewalld:
+        source: "{{ item }}"
+        zone: trusted
+        permanent: true
+        immediate: true
+        state: enabled
+      loop:
+        - "{{ pod_network_cidr }}"
+        - "{{ service_cidr }}"
+
+    - name: Enable masquerading
+      ansible.posix.firewalld:
+        masquerade: "true"
+        permanent: true
+        immediate: true
+        state: enabled

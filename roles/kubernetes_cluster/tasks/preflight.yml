@@ -1,0 +1,33 @@
+---
+- name: Check inventory groups
+  ansible.builtin.assert:
+    that:
+      - groups[k8s_master_group] | default([]) | length == 1
+      - groups[k8s_worker_group] | default([]) | length >= 1
+    fail_msg: >-
+      L'inventaire doit contenir exactement 1 hôte dans [{{ k8s_master_group }}]
+      et au moins 1 hôte dans [{{ k8s_worker_group }}].
+    quiet: true
+  run_once: true
+
+- name: Check OS family
+  ansible.builtin.assert:
+    that: ansible_os_family == 'RedHat' and ansible_distribution_major_version | int >= 8
+    fail_msg: "OS non supporté : {{ ansible_distribution }} {{ ansible_distribution_version }} (attendu : EL 8 ou 9)."
+    quiet: true
+
+- name: Check node resources (RAM / CPU)
+  ansible.builtin.assert:
+    that:
+      - ansible_memtotal_mb >= k8s_min_memory_mb
+      - inventory_hostname not in groups[k8s_master_group] or ansible_processor_vcpus >= 2
+    fail_msg: >-
+      {{ inventory_hostname }} : {{ ansible_memtotal_mb }} Mo RAM / {{ ansible_processor_vcpus }} vCPU.
+      kubeadm exige >= {{ k8s_min_memory_mb }} Mo de RAM (2 Go conseillés) et 2 vCPU sur le control-plane.
+    quiet: true
+
+- name: Check node IP is configured on the node
+  ansible.builtin.assert:
+    that: k8s_node_ip in ansible_all_ipv4_addresses
+    fail_msg: "{{ k8s_node_ip }} n'est porté par aucune interface de {{ inventory_hostname }} ({{ ansible_all_ipv4_addresses | join(', ') }})."
+    quiet: true

@@ -1,0 +1,46 @@
+---
+- name: Generate default containerd configuration
+  ansible.builtin.command: containerd config default
+  register: kc_containerd_default
+  changed_when: false
+  check_mode: false
+
+# Le config.toml livré par containerd.io contient disabled_plugins = ["cri"]
+# => kubeadm ne peut pas parler au runtime. On repart de la config par défaut
+# avec le driver cgroup systemd (obligatoire avec kubelet sur systemd).
+- name: Write containerd configuration (CRI enabled, SystemdCgroup = true)
+  ansible.builtin.copy:
+    dest: /etc/containerd/config.toml
+    content: >-
+      {{ kc_containerd_default.stdout
+         | regex_replace('SystemdCgroup = false', 'SystemdCgroup = true')
+         | regex_replace('sandbox_image = ".*"', 'sandbox_image = "' ~ pause_image ~ '"') }}
+    mode: "0644"
+  notify: Restart containerd
+
+- name: Configure crictl endpoint
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    content: |
+      runtime-endpoint: {{ k8s_cri_socket }}
+      image-endpoint: {{ k8s_cri_socket }}
+      timeout: 10
+    mode: "0644"
+
+- name: Enable and start containerd
+  ansible.builtin.systemd:
+    name: containerd
+    state: started
+    enabled: true
+    masked: false
+
+- name: Apply containerd configuration now (before kubeadm)
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify CRI is reachable with crictl
+  ansible.builtin.command: crictl info
+  register: kc_crictl
+  changed_when: false
+  retries: 5
+  delay: 3
+  until: kc_crictl.rc == 0

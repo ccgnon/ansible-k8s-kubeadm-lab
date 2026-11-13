@@ -1,0 +1,14 @@
+---
+- name: Deploy Kubernetes cluster
+  hosts: masters:workers
+  become: true
+  # Les nœuds dépendent les uns des autres (join) : un échec sur un nœud
+  # arrête tout le run au lieu de produire des erreurs en cascade.
+  any_errors_fatal: true
+  gather_subset:
+    - "!all"
+    - min
+    - hardware
+    - network
+  roles:
+    - kubernetes_cluster

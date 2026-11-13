@@ -1,0 +1,10 @@
+[masters]
+redhat-vm1 ansible_host=192.168.56.11 ansible_ssh_private_key_file=.vagrant/machines/redhat-vm1/virtualbox/private_key
+
+[workers]
+redhat-vm2 ansible_host=192.168.56.12 ansible_ssh_private_key_file=.vagrant/machines/redhat-vm2/virtualbox/private_key
+redhat-vm3 ansible_host=192.168.56.13 ansible_ssh_private_key_file=.vagrant/machines/redhat-vm3/virtualbox/private_key
+
+[all:vars]
+ansible_user=vagrant
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'

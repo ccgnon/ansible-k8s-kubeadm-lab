@@ -1,0 +1,25 @@
+---
+# Ressources lues par l'opérateur Tigera (déployé juste avant).
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  calicoNetwork:
+    # Sous Vagrant, "first-found" choisirait l'interface NAT (10.0.2.15) :
+    # on prend l'InternalIP du nœud, fixée par kubelet --node-ip.
+    nodeAddressAutodetectionV4:
+      kubernetes: NodeInternalIP
+    ipPools:
+      - name: default-ipv4-ippool
+        cidr: {{ pod_network_cidr }}
+        blockSize: 26
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+---
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

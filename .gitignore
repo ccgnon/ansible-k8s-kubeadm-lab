@@ -1,0 +1,14 @@
+# Vagrant (contient les clés SSH privées des VM)
+.vagrant/
+*.log
+
+# Ansible
+.ansible/
+*.retry
+collections/
+
+# Éditeurs / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

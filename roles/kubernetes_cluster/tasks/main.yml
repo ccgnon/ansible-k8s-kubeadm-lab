@@ -1,0 +1,49 @@
+---
+# Ordre d'exécution du rôle. Chaque étape a son tag, ex. :
+#   ansible-playbook k8s_cluster.yml --tags containerd
+#   ansible-playbook k8s_cluster.yml --skip-tags firewall
+- name: Preflight checks
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [always]
+
+- name: System prerequisites
+  ansible.builtin.import_tasks: prereqs.yml
+  tags: [prereqs]
+
+- name: Package repositories and packages
+  ansible.builtin.import_tasks: packages.yml
+  tags: [packages]
+
+- name: Container runtime
+  ansible.builtin.import_tasks: containerd.yml
+  tags: [containerd]
+
+- name: Container images
+  ansible.builtin.import_tasks: images.yml
+  tags: [images]
+
+- name: Kubelet
+  ansible.builtin.import_tasks: kubelet.yml
+  tags: [kubelet]
+
+- name: Firewall
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [firewall]
+
+- name: Targeted node reset (only with -e k8s_reset_nodes=...)
+  ansible.builtin.import_tasks: reset.yml
+  tags: [reset]
+
+- name: Control-plane
+  ansible.builtin.import_tasks: master.yml
+  when: inventory_hostname in groups[k8s_master_group]
+  tags: [master]
+
+- name: Workers
+  ansible.builtin.import_tasks: worker.yml
+  when: inventory_hostname in groups[k8s_worker_group]
+  tags: [join]
+
+- name: Cluster verification
+  ansible.builtin.import_tasks: verify.yml
+  tags: [verify]

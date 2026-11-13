@@ -1,0 +1,118 @@
+---
+- name: Initialize Kubernetes cluster
+  ansible.builtin.command:
+    cmd: >-
+      kubeadm init
+      --kubernetes-version={{ kubernetes_version }}
+      --apiserver-advertise-address={{ k8s_node_ip }}
+      --control-plane-endpoint={{ inventory_hostname }}:6443
+      --pod-network-cidr={{ pod_network_cidr }}
+      --service-cidr={{ service_cidr }}
+      --cri-socket={{ k8s_cri_socket }}
+    creates: /etc/kubernetes/admin.conf   # idempotent : ne rejoue pas l'init
+
+- name: Create .kube directory for {{ k8s_admin_user }}
+  ansible.builtin.file:
+    path: "/home/{{ k8s_admin_user }}/.kube"
+    state: directory
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0755"
+
+- name: Copy admin.conf to {{ k8s_admin_user }}
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "/home/{{ k8s_admin_user }}/.kube/config"
+    owner: "{{ k8s_admin_user }}"
+    group: "{{ k8s_admin_user }}"
+    mode: "0600"
+    remote_src: true
+
+- name: Wait for the API server
+  ansible.builtin.command: kubectl get --raw=/readyz
+  environment: "{{ k8s_admin_env }}"
+  register: kc_api_ready
+  changed_when: false
+  retries: 30
+  delay: 5
+  until: kc_api_ready.rc == 0
+
+# kube-proxy doit tourner partout avant Calico : l'opérateur Tigera joint l'API
+# via le service 10.96.0.1, que seul kube-proxy rend joignable. Un kube-proxy
+# en CrashLoopBackOff (ex. module manquant, corrigé depuis) peut attendre
+# jusqu'à 5 min son prochain essai : on le relance tout de suite.
+- name: Check kube-proxy rollout
+  ansible.builtin.command: kubectl -n kube-system rollout status ds/kube-proxy --timeout=60s
+  environment: "{{ k8s_admin_env }}"
+  register: kc_kube_proxy
+  changed_when: false
+  failed_when: false
+
+- name: Restart kube-proxy pods that are not ready
+  ansible.builtin.command: kubectl -n kube-system rollout restart ds/kube-proxy
+  environment: "{{ k8s_admin_env }}"
+  when: kc_kube_proxy.rc != 0
+  changed_when: true
+
+- name: Wait for kube-proxy on all nodes
+  ansible.builtin.command: kubectl -n kube-system rollout status ds/kube-proxy --timeout=180s
+  environment: "{{ k8s_admin_env }}"
+  when: kc_kube_proxy.rc != 0
+  changed_when: false
+
+# --- Calico (opérateur Tigera) ----------------------------------------------
+- name: Check whether Calico is already installed
+  ansible.builtin.command: kubectl get installation default
+  environment: "{{ k8s_admin_env }}"
+  register: kc_calico_installed
+  changed_when: false
+  failed_when: false
+
+- name: Install Calico
+  when: kc_calico_installed.rc != 0
+  environment: "{{ k8s_admin_env }}"
+  block:
+    - name: Deploy Tigera operator
+      ansible.builtin.command: >-
+        kubectl apply --server-side
+        -f https://raw.githubusercontent.com/projectcalico/calico/v{{ calico_version }}/manifests/tigera-operator.yaml
+      changed_when: true
+
+    - name: Wait for Calico CRDs
+      ansible.builtin.command: >-
+        kubectl wait --for=condition=established --timeout=120s
+        crd/installations.operator.tigera.io crd/apiservers.operator.tigera.io
+      changed_when: false
+
+    - name: Render Calico custom resources
+      ansible.builtin.template:
+        src: calico.yml.j2
+        dest: /etc/kubernetes/calico-custom-resources.yml
+        mode: "0644"
+
+    - name: Apply Calico custom resources
+      ansible.builtin.command: kubectl apply -f /etc/kubernetes/calico-custom-resources.yml
+      changed_when: true
+
+# --- Commande de join -------------------------------------------------------
+# Générée seulement si au moins un worker n'a pas encore rejoint le cluster,
+# et partagée via hostvars (aucun fichier sur le contrôleur).
+- name: List nodes already in the cluster
+  ansible.builtin.command: kubectl get nodes -o name
+  environment: "{{ k8s_admin_env }}"
+  register: kc_nodes
+  changed_when: false
+
+- name: Generate worker join command
+  ansible.builtin.command: kubeadm token create --ttl 30m --print-join-command
+  register: kc_join_cmd
+  changed_when: true
+  when: >-
+    groups[k8s_worker_group]
+    | reject('in', kc_nodes.stdout_lines | map('regex_replace', '^node/', '') | list)
+    | list | length > 0
+
+- name: Store join command as a fact
+  ansible.builtin.set_fact:
+    k8s_join_command: "{{ kc_join_cmd.stdout | trim }}"
+  when: kc_join_cmd is not skipped

@@ -1,0 +1,69 @@
+---
+# Pré-téléchargement des images avec reprises. Les pulls depuis Docker Hub
+# échouent parfois (timeout auth.docker.io, couche corrompue "unexpected
+# commit digest") ; sans ça, le cluster ne réessaie qu'avec un délai croissant
+# et les pods Calico restent bloqués en ImagePullBackOff.
+- name: Pre-pull control-plane images
+  ansible.builtin.command: >-
+    kubeadm config images pull
+    --kubernetes-version={{ kubernetes_version }}
+    --cri-socket={{ k8s_cri_socket }}
+  register: kc_kubeadm_pull
+  until: kc_kubeadm_pull.rc == 0
+  retries: "{{ k8s_image_pull_retries }}"
+  delay: "{{ k8s_image_pull_delay }}"
+  changed_when: "'Pulled' in kc_kubeadm_pull.stdout"
+  when: inventory_hostname in groups[k8s_master_group]
+
+# 1re passe : reprises sur les erreurs passagères. Une erreur "unexpected
+# commit digest" vient d'un téléchargement partiel corrompu gardé dans le cache
+# de containerd (ingest) : réessayer ne sert à rien, on passe à la réparation.
+- name: Pre-pull Calico images (first pass)
+  ansible.builtin.shell: >-
+    crictl inspecti -q {{ item }} >/dev/null 2>&1 && echo present
+    || crictl pull {{ item }}
+  loop: "{{ k8s_calico_images }}"
+  register: kc_pull
+  until: >-
+    kc_pull.rc == 0
+    or kc_pull.stderr is search('unexpected commit digest|failed commit on ref')
+  retries: "{{ k8s_image_pull_retries }}"
+  delay: "{{ k8s_image_pull_delay }}"
+  failed_when: false
+  changed_when: kc_pull.rc == 0 and 'present' not in kc_pull.stdout
+
+- name: Repair containerd download cache and retry failed images
+  when: kc_pull.results | selectattr('rc', 'ne', 0) | list | length > 0
+  block:
+    - name: Stop containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+
+    - name: Purge partial downloads (containerd ingest)
+      ansible.builtin.command: >-
+        find /var/lib/containerd/io.containerd.content.v1.content/ingest
+        -mindepth 1 -delete
+      changed_when: true
+
+    - name: Start containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+
+    - name: Wait for CRI after restart
+      ansible.builtin.command: crictl info
+      register: kc_crictl_restart
+      changed_when: false
+      retries: 10
+      delay: 3
+      until: kc_crictl_restart.rc == 0
+
+    - name: Pre-pull Calico images (second pass)
+      ansible.builtin.command: "crictl pull {{ item }}"
+      loop: "{{ kc_pull.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+      register: kc_pull_retry
+      until: kc_pull_retry.rc == 0
+      retries: "{{ k8s_image_pull_retries }}"
+      delay: "{{ k8s_image_pull_delay }}"
+      changed_when: true

@@ -1,0 +1,58 @@
+---
+# --- Résolution de noms ----------------------------------------------------
+- name: Remove loopback mapping of the hostname (Vagrant adds 127.0.x.1 <hostname>)
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.[01]\.1\s+.*\b{{ inventory_hostname }}\b'
+    state: absent
+
+- name: Add cluster nodes to /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} ANSIBLE MANAGED - kubernetes nodes"
+    block: |
+      {% for host in groups[k8s_master_group] + groups[k8s_worker_group] %}
+      {{ hostvars[host].k8s_node_ip | default(hostvars[host].ansible_host) }} {{ host }}
+      {% endfor %}
+
+# --- Swap ------------------------------------------------------------------
+- name: Disable swap
+  ansible.builtin.command: swapoff -a
+  when: ansible_swaptotal_mb > 0
+  changed_when: true
+
+- name: Comment out swap entries in /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+
+# --- SELinux ---------------------------------------------------------------
+- name: Set SELinux to {{ k8s_selinux_state }}
+  ansible.posix.selinux:
+    policy: targeted
+    state: "{{ k8s_selinux_state }}"
+
+# --- Noyau -----------------------------------------------------------------
+- name: Persist kernel modules
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: "{{ k8s_kernel_modules | join('\n') }}\n"
+    mode: "0644"
+
+- name: Load kernel modules
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ k8s_kernel_modules }}"
+
+- name: Set sysctl parameters for Kubernetes
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/k8s.conf
+    sysctl_set: true
+    reload: true
+  loop: "{{ k8s_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"

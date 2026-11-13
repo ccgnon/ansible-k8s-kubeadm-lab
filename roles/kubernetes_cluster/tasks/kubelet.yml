@@ -1,0 +1,44 @@
+---
+# Un kubelet "masqué" bloque toute activation. Le masque peut venir de :
+#   - /etc/systemd/system/kubelet.service -> /dev/null   (systemctl mask)
+#   - /run/systemd/system/kubelet.service -> /dev/null   (systemctl mask --runtime)
+#   (un fichier du paquet vide/abîmé est réparé en amont, cf. packages.yml)
+# On détecte via systemd lui-même, puis on répare selon le cas.
+- name: Get kubelet unit state
+  ansible.builtin.command: systemctl is-enabled kubelet  # noqa: command-instead-of-module
+  register: kc_kubelet_state
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Repair masked kubelet unit
+  when: kc_kubelet_state.stdout is search('masked')
+  block:
+    - name: Unmask kubelet (persistent and runtime masks)
+      ansible.builtin.command: "systemctl unmask {{ item }} kubelet.service"  # noqa: command-instead-of-module
+      loop: ["", "--runtime"]
+      changed_when: true
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Re-check kubelet unit state
+      ansible.builtin.command: systemctl is-enabled kubelet  # noqa: command-instead-of-module
+      register: kc_kubelet_state_after
+      changed_when: false
+      failed_when: kc_kubelet_state_after.stdout is search('masked')
+
+- name: Force kubelet node IP (host-only network, not Vagrant NAT)
+  ansible.builtin.copy:
+    dest: /etc/sysconfig/kubelet
+    content: |
+      KUBELET_EXTRA_ARGS=--node-ip={{ k8s_node_ip }}
+    mode: "0644"
+  notify: Restart kubelet
+
+- name: Enable kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    masked: false

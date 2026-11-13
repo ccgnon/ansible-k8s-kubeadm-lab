@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: kubernetes_cluster
+  author: Stéphane Kanembang
+  description: Déploie un cluster Kubernetes kubeadm + containerd + Calico sur RHEL/Rocky/Alma 8-9
+  license: MIT
+  min_ansible_version: "2.12"
+  platforms:
+    - name: EL
+      versions: ["8", "9"]
+dependencies: []
+# Collections requises : ansible.posix, community.general (cf. requirements.yml)
